@@ -298,22 +298,33 @@ const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat('es-AR');
 const pending = (t) => `<span class="pending">${t}</span>`;
 
-// Los modelos no se publican como .glb: van codificados y se decodifican en memoria.
+// Los modelos no se publican como .glb en claro: se guardan cifrados con
+// AES-256-GCM (Web Crypto API del navegador) y se descifran en memoria.
 // MODE 'json' = base64 dentro de .json (visor de Claude); 'dat' = binario (GitHub Pages).
+// Aviso honesto: la clave viaja en este mismo archivo porque GitHub Pages
+// no tiene backend. Esto evita la descarga casual con clic derecho, pero
+// no es secreto frente a alguien dispuesto a leer el código fuente.
 const MODE = 'dat';
-function seedOf(name) {
-  let h = 2166136261;
-  for (const ch of new TextEncoder().encode('herp3d:' + name)) { h ^= ch; h = Math.imul(h, 16777619) >>> 0; }
-  return h || 1;
-}
-function decode(bytes, name) {
-  let s = seedOf(name);
-  const out = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i += 4) {
-    s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0;
-    for (let k = 0; k < 4 && i + k < bytes.length; k++) out[i + k] = bytes[i + k] ^ ((s >>> (8 * k)) & 255);
-  }
+const AES_KEY_HEX = '8631b7d1d519e524b56a07dd0d4b8334e45c5455b7842289456fcea53fc91e72';
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
   return out;
+}
+let aesKeyPromise = null;
+function getAesKey() {
+  if (!aesKeyPromise) {
+    aesKeyPromise = crypto.subtle.importKey('raw', hexToBytes(AES_KEY_HEX), 'AES-GCM', false, ['decrypt']);
+  }
+  return aesKeyPromise;
+}
+// bytes = [12 bytes IV][ciphertext + tag GCM de 16 bytes]
+async function decode(bytes) {
+  const key = await getAesKey();
+  const iv = bytes.slice(0, 12);
+  const ciphertext = bytes.slice(12);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  return new Uint8Array(plain);
 }
 const blobCache = {};
 async function modelUrl(s) {
@@ -325,7 +336,7 @@ async function modelUrl(s) {
   } else {
     bytes = new Uint8Array(await (await fetch(`d/${s.id}.dat`)).arrayBuffer());
   }
-  const glb = decode(bytes, s.id);
+  const glb = await decode(bytes);
   return (blobCache[s.id] = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' })));
 }
 
